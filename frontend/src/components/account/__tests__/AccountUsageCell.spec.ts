@@ -130,6 +130,30 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it('does not add automatic usage requests for other providers', async () => {
+    const requestBatchedUsage = vi.fn()
+    const wrapper = mount(AccountUsageCell, { props: { account: makeAccount({ id: 99001, platform: 'openai', type: 'oauth' }), requestBatchedUsage }, global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } } })
+    await flushPromises()
+    requestBatchedUsage.mockClear()
+    await wrapper.setProps({ autoRefreshToken: 1 })
+    await flushPromises()
+    expect(requestBatchedUsage).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('refreshes non-batched quota with active reads while retaining server cache protection', async () => {
+    const account = makeAccount({ id: 98001, platform: 'anthropic', type: 'oauth' })
+    getUsage.mockResolvedValueOnce({ five_hour: { utilization: 12 } }).mockResolvedValue({ five_hour: { utilization: 43 } })
+    const wrapper = mount(AccountUsageCell, { props: { account }, global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } } })
+    await flushPromises()
+    expect(getUsage).toHaveBeenLastCalledWith(account.id, 'passive', false)
+    await wrapper.setProps({ autoRefreshToken: 1 })
+    await flushPromises()
+    expect(getUsage).toHaveBeenLastCalledWith(account.id, 'active', false)
+    expect(wrapper.findComponent({ name: 'UsageProgressBar' }).props('utilization')).toBe(43)
+    wrapper.unmount()
+  })
+
   it('renders eligible Ollama Cloud state and forwards query updates', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {

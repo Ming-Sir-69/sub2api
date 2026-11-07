@@ -750,15 +750,17 @@ const props = withDefaults(
     todayStats?: WindowStats | null
     todayStatsLoading?: boolean
     manualRefreshToken?: number
+    autoRefreshToken?: number
     batchedUsage?: AccountUsageInfo | null
     batchedUsageError?: string | null
     batchedUsageLoading?: boolean
-    requestBatchedUsage?: ((account: Account, options?: { force?: boolean }) => void) | null
+    requestBatchedUsage?: ((account: Account, options?: { force?: boolean; source?: 'active'; bypassCache?: boolean }) => void) | null
   }>(),
   {
     todayStats: null,
     todayStatsLoading: false,
     manualRefreshToken: 0,
+    autoRefreshToken: 0,
     batchedUsage: null,
     batchedUsageError: null,
     batchedUsageLoading: false,
@@ -1492,7 +1494,7 @@ const isAnthropicOAuthOrSetupToken = computed(() => {
   return props.account.platform === 'anthropic' && (props.account.type === 'oauth' || props.account.type === 'setup-token')
 })
 
-const requestParentBatchUsage = (options?: { force?: boolean }) => {
+const requestParentBatchUsage = (options?: { force?: boolean; source?: 'active'; bypassCache?: boolean }) => {
   if (!isBatchManaged.value || !shouldFetchUsage.value) return
   props.requestBatchedUsage?.(props.account, options)
 }
@@ -1504,7 +1506,7 @@ const syncManagedUsageState = () => {
   loading.value = props.batchedUsageLoading === true
 }
 
-const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?: boolean }) => {
+const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?: boolean; forceProbe?: boolean }) => {
   if (!shouldFetchUsage.value) return
   if (isBatchManaged.value) {
     requestParentBatchUsage({ force: options?.bypassCache === true })
@@ -1526,7 +1528,7 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
 
   try {
 		const fetchFn = () => options?.source
-			? adminAPI.accounts.getUsage(props.account.id, options.source, options.bypassCache === true)
+			? adminAPI.accounts.getUsage(props.account.id, options.source, options.forceProbe ?? options.bypassCache === true)
 			: adminAPI.accounts.getUsage(props.account.id)
     const result = await enqueueUsageRequest(props.account, fetchFn)
     if (!unmounted.value) {
@@ -1771,13 +1773,31 @@ watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
 
   if (isBatchManaged.value) {
-    requestParentBatchUsage({ force: true })
+    // The server already supplied a new snapshot; invalidate only the browser cache.
+    requestParentBatchUsage({ bypassCache: true })
     return
   }
 
   _usageCache.delete(props.account.id)
   requestAutoLoad()
 })
+
+// Automatic refresh skips the browser cache but keeps server-side probe TTLs.
+// Mounting remains passive; only the user-enabled timer opts into upstream reads.
+watch(
+  () => props.autoRefreshToken,
+  (nextToken, prevToken) => {
+    if (nextToken === prevToken || !shouldFetchUsage.value) return
+    if (props.account.platform !== 'anthropic' || props.account.type !== 'oauth') return
+    if (isBatchManaged.value) {
+      requestParentBatchUsage({ source: 'active', bypassCache: true })
+      return
+    }
+    // Mobile cells outside the viewport keep their existing lazy-load behavior.
+    if (loading.value || (shouldLazyLoadOnMobile.value && !hasEnteredViewport.value)) return
+    void loadUsage({ source: 'active', bypassCache: true, forceProbe: false })
+  }
+)
 
 watch(
   () => props.manualRefreshToken,
