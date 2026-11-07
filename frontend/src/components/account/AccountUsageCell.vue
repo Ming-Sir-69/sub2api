@@ -1509,7 +1509,7 @@ const syncManagedUsageState = () => {
 const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?: boolean; forceProbe?: boolean }) => {
   if (!shouldFetchUsage.value) return
   if (isBatchManaged.value) {
-    requestParentBatchUsage({ force: options?.bypassCache === true })
+    requestParentBatchUsage({ force: options?.forceProbe ?? options?.bypassCache === true, ...(options?.source === 'active' ? { source: 'active' as const } : {}) })
     return
   }
 
@@ -1805,12 +1805,14 @@ watch(
     if (nextToken === prevToken) return
     if (!shouldFetchUsage.value) return
 
+    const source = isAnthropicOAuthOrSetupToken.value
+      ? props.account.type === 'oauth' ? 'active' : 'passive'
+      : undefined
     if (isBatchManaged.value) {
-      requestParentBatchUsage({ force: true })
+      requestParentBatchUsage({ force: true, ...(source === 'active' ? { source } : {}) })
       return
     }
 
-    const source = isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
     _usageCache.delete(props.account.id)
     loadUsage({ source, bypassCache: true }).catch((e) => {
       console.error('Failed to refresh usage after manual refresh:', e)

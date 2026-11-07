@@ -130,6 +130,39 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it('manual refresh reads fresh Claude quota instead of replaying passive usage', async () => {
+    getUsage.mockResolvedValueOnce({ five_hour: { utilization: 6 } }).mockResolvedValue({ five_hour: { utilization: 18 } })
+    const wrapper = mount(AccountUsageCell, { props: { account: makeAccount({ id: 98011, platform: 'anthropic', type: 'oauth' }) }, global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } } })
+    await flushPromises()
+    expect(getUsage).toHaveBeenLastCalledWith(98011, 'passive', false)
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+    expect(getUsage).toHaveBeenLastCalledWith(98011, 'active', true)
+    expect(wrapper.findComponent({ name: 'UsageProgressBar' }).props('utilization')).toBe(18)
+    wrapper.unmount()
+  })
+
+  it('manual refresh opts batched Claude OAuth into fresh upstream reads', async () => {
+    const requestBatchedUsage = vi.fn()
+    const wrapper = mount(AccountUsageCell, { props: { account: makeAccount({ id: 98012, platform: 'anthropic', type: 'oauth' }), requestBatchedUsage }, global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } } })
+    await flushPromises()
+    requestBatchedUsage.mockClear()
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+    expect(requestBatchedUsage).toHaveBeenCalledWith(expect.objectContaining({ id: 98012 }), { force: true, source: 'active' })
+    wrapper.unmount()
+  })
+
+  it('manual refresh keeps setup tokens on the original passive path', async () => {
+    getUsage.mockResolvedValue({ five_hour: { utilization: 6 } })
+    const wrapper = mount(AccountUsageCell, { props: { account: makeAccount({ id: 98013, platform: 'anthropic', type: 'setup-token' }) }, global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } } })
+    await flushPromises()
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+    expect(getUsage).toHaveBeenLastCalledWith(98013, 'passive', true)
+    wrapper.unmount()
+  })
+
   it('does not add automatic usage requests for other providers', async () => {
     const requestBatchedUsage = vi.fn()
     const wrapper = mount(AccountUsageCell, { props: { account: makeAccount({ id: 99001, platform: 'openai', type: 'oauth' }), requestBatchedUsage }, global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } } })
