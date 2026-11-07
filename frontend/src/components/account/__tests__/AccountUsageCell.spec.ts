@@ -130,6 +130,26 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it('keeps cached Claude quota visible while a replacement batch is loading', async () => {
+    const requestBatchedUsage = vi.fn()
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 98101, platform: 'anthropic', type: 'oauth' }), requestBatchedUsage,
+        batchedUsage: { five_hour: { utilization: 21 } }, batchedUsageLoading: false },
+      global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div data-test="quota">{{ utilization }}</div>' }, AccountQuotaInfo: true } }
+    })
+    await flushPromises()
+    const quota = wrapper.get('[data-test="quota"]').element
+    await wrapper.setProps({ batchedUsageLoading: true })
+    expect(wrapper.get('[data-test="quota"]').text()).toBe('21')
+    expect(wrapper.get('[data-test="quota"]').element).toBe(quota)
+    expect(wrapper.find('.animate-pulse').exists()).toBe(false)
+    expect(wrapper.attributes('aria-busy')).toBe('true')
+    await wrapper.setProps({ batchedUsage: { five_hour: { utilization: 44 } }, batchedUsageLoading: false })
+    expect(wrapper.get('[data-test="quota"]').text()).toBe('44')
+    expect(wrapper.get('[data-test="quota"]').element).toBe(quota)
+    wrapper.unmount()
+  })
+
   it('manual refresh reads fresh Claude quota instead of replaying passive usage', async () => {
     getUsage.mockResolvedValueOnce({ five_hour: { utilization: 6 } }).mockResolvedValue({ five_hour: { utilization: 18 } })
     const wrapper = mount(AccountUsageCell, { props: { account: makeAccount({ id: 98011, platform: 'anthropic', type: 'oauth' }) }, global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } } })
