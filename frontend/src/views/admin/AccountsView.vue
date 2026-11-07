@@ -870,7 +870,7 @@ const queueBatchedUsage = (account: Account, options?: { force?: boolean; source
   const cacheKey = account.id
   const key = String(cacheKey)
   // Slow polls must finish before another timer tick can supersede them.
-  if (options?.source === 'active' && usageBatchLoadingByAccountId.value[key]) return
+  if (options?.source === 'active' && !force && usageBatchLoadingByAccountId.value[key]) return
 
   if (force || options?.bypassCache) {
     usageBatchCache.delete(cacheKey)

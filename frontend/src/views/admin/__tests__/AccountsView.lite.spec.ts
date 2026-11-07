@@ -105,7 +105,7 @@ function mountView(stubActionMenu = true, realUsage = false) {
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>' },
         DataTable: DataTableStub,
-        AccountTableActions: { template: '<div><slot name="after" /></div>' },
+        AccountTableActions: { template: `<div><button data-test="manual-refresh" @click="$emit('refresh')">refresh</button><slot name="after" /></div>` },
         AccountTableFilters: true,
         AccountBulkActionsBar: true,
         Pagination: true,
@@ -263,6 +263,29 @@ describe('admin AccountsView lite account list', () => {
     expect(listWithEtag).toHaveBeenCalled()
     expect(getBatchUsage).toHaveBeenLastCalledWith([42], false, 'active')
     expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).toContain('43')
+    wrapper.unmount()
+  })
+
+  it('manual refresh supersedes an in-flight passive read and ignores its late stale result', async () => {
+    vi.useFakeTimers()
+    listAccounts.mockResolvedValue({ items: [{ ...listRow, platform: 'anthropic' }], total: 1, page: 1, page_size: 20, pages: 1 })
+    const usage = (percent: number, source: string) => ({ usage: { '42': { source, five_hour: { utilization: percent }, seven_day: { utilization: percent } } }, errors: {} })
+    let finishPassive: (value: unknown) => void = () => {}
+    getBatchUsage.mockImplementationOnce(() => new Promise(resolve => { finishPassive = resolve })).mockResolvedValue(usage(44, 'active'))
+    const wrapper = mountView(true, true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getBatchUsage).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-test="manual-refresh"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(getBatchUsage).toHaveBeenLastCalledWith([42], true, 'active')
+    expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).toContain('44')
+    finishPassive(usage(21, 'passive'))
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).not.toContain('21')
+    expect(wrapper.text()).not.toContain('admin.accounts.usageWindow.passiveSampled')
     wrapper.unmount()
   })
 

@@ -335,3 +335,43 @@ func TestAccountUsageService_GetUsageBatch_ActiveSource(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountUsageService_ManualRefreshBypassesSuccessfulClaudeCache(t *testing.T) {
+	account := Account{ID: 8702, Platform: PlatformAnthropic, Type: AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "test-token"}, Extra: map[string]any{}}
+	repo := &accountUsageCodexProbeRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}}
+	cache := NewUsageCache()
+	old := &ClaudeUsageResponse{}
+	old.FiveHour.Utilization = 21
+	fresh := &ClaudeUsageResponse{}
+	fresh.FiveHour.Utilization = 44
+	fetcher := &autoRefreshUsageFetcher{response: fresh}
+	svc := &AccountUsageService{accountRepo: repo, usageLogRepo: &usageBatchLogRepoStub{}, cache: cache, usageFetcher: fetcher}
+	cache.apiCache.Store(account.ID, &apiUsageCache{response: old, timestamp: time.Now()})
+	for _, step := range []struct {
+		force bool
+		want  float64
+		calls int32
+	}{{false, 21, 0}, {true, 44, 1}, {false, 44, 1}} {
+		usage, failures, err := svc.GetUsageBatch(t.Context(), []int64{account.ID}, step.force, "active")
+		if err != nil || len(failures) != 0 {
+			t.Fatalf("refresh failed: %v %v", err, failures)
+		}
+		if usage[account.ID].FiveHour.Utilization != step.want || fetcher.calls.Load() != step.calls {
+			t.Fatalf("force=%v got %.0f with %d calls; want %.0f with %d", step.force, usage[account.ID].FiveHour.Utilization, fetcher.calls.Load(), step.want, step.calls)
+		}
+	}
+}
+
+func TestAccountUsageService_ManualRefreshPreservesClaudeErrorBackoff(t *testing.T) {
+	account := Account{ID: 8703, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "test-token"}}
+	repo := &accountUsageCodexProbeRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}}
+	cache := NewUsageCache()
+	cache.apiCache.Store(account.ID, &apiUsageCache{err: errors.New("upstream rate limited"), timestamp: time.Now()})
+	fetcher := &autoRefreshUsageFetcher{}
+	svc := &AccountUsageService{accountRepo: repo, usageLogRepo: &usageBatchLogRepoStub{}, cache: cache, usageFetcher: fetcher}
+	_, failures, err := svc.GetUsageBatch(t.Context(), []int64{account.ID}, true, "active")
+	if err != nil || !strings.Contains(failures[account.ID], "rate limited") || fetcher.calls.Load() != 0 {
+		t.Fatalf("error backoff bypassed: %v %v", err, failures)
+	}
+}

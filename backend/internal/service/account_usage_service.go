@@ -423,7 +423,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 					// 负缓存命中：返回缓存的错误，避免重试风暴
 					return nil, cache.err
 				}
-				if cache.response != nil && age < apiCacheTTL {
+				if !forceProbe && cache.response != nil && age < apiCacheTTL {
 					apiResp = cache.response
 				}
 			}
@@ -449,7 +449,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 						if cache.err != nil && age < apiErrorCacheTTL {
 							return nil, cache.err
 						}
-						if cache.response != nil && age < apiCacheTTL {
+						if !forceProbe && cache.response != nil && age < apiCacheTTL {
 							return cache.response, nil
 						}
 					}
