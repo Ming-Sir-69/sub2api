@@ -26,7 +26,7 @@ func TestClaudeWindowPresenceSurvivesActiveAndPassiveReads(t *testing.T) {
 			usage := svc.buildUsageInfo(&response, &now)
 			require.Equal(t, tc.visible, usage.FiveHour != nil)
 			require.NotNil(t, usage.SevenDay)
-			svc.syncActiveToPassive(context.Background(), 91, usage)
+			svc.syncActiveToPassive(context.Background(), &Account{ID: 91}, usage)
 			extra := repo.extraUpdates[91]
 			require.Equal(t, tc.visible, extra["claude_five_hour_available"])
 			passive, err := svc.getPassiveUsageForAccount(context.Background(), &Account{ID: 91, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: extra})
