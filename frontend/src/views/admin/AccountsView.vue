@@ -331,6 +331,7 @@
               :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
               :today-stats-loading="todayStatsLoading"
               :manual-refresh-token="usageManualRefreshToken"
+              :auto-refresh-token="usageAutoRefreshToken"
               :batched-usage="usageBatchByAccountId[String(row.id)] ?? null"
               :batched-usage-error="usageBatchErrorByAccountId[String(row.id)] ?? null"
               :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
@@ -749,6 +750,7 @@ const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
 const pendingTodayStatsRefresh = ref(false)
 const usageManualRefreshToken = ref(0)
+const usageAutoRefreshToken = ref(0)
 
 const desktopViewportQuery = '(min-width: 768px)'
 const isDesktopViewport = ref(
@@ -766,6 +768,7 @@ const USAGE_BATCH_CACHE_TTL = 5 * 60 * 1000
 const pendingUsageBatchIds = new Set<number>()
 let usageBatchFlushTimer: ReturnType<typeof setTimeout> | null = null
 let queuedUsageBatchForce = false
+let queuedUsageBatchSource: 'active' | undefined
 let usageBatchRequestToken = 0
 
 const buildDefaultTodayStats = (): WindowStats => ({
@@ -816,8 +819,10 @@ const flushQueuedUsageBatch = async () => {
   const accountIDs = Array.from(pendingUsageBatchIds)
   const force = queuedUsageBatchForce
   const refreshKeys = new Map(accounts.value.map(account => [account.id, buildAccountUsageRefreshKey(account)]))
+  const source = queuedUsageBatchSource
   pendingUsageBatchIds.clear()
   queuedUsageBatchForce = false
+  queuedUsageBatchSource = undefined
 
   if (accountIDs.length === 0) return
 
@@ -827,7 +832,7 @@ const flushQueuedUsageBatch = async () => {
   }, {})
 
   try {
-    const result = await adminAPI.accounts.getBatchUsage(accountIDs, force)
+    const result = await adminAPI.accounts.getBatchUsage(accountIDs, force, source)
 
     const usageMap = result.usage ?? {}
     const errorMap = result.errors ?? {}
@@ -872,15 +877,17 @@ const flushQueuedUsageBatch = async () => {
   }
 }
 
-const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
+const queueBatchedUsage = (account: Account, options?: { force?: boolean; source?: 'active'; bypassCache?: boolean }) => {
   if (!isDesktopViewport.value) return
   if (!accountSupportsBatchUsage(account)) return
 
   const force = options?.force === true
   const cacheKey = account.id
   const key = String(cacheKey)
+  // Slow polls must finish before another timer tick can supersede them.
+  if (options?.source === 'active' && !force && usageBatchLoadingByAccountId.value[key] && !pendingUsageBatchIds.has(cacheKey)) return
 
-  if (force) {
+  if (force || options?.bypassCache) {
     usageBatchCache.delete(cacheKey)
   } else {
     const cached = usageBatchCache.get(cacheKey)
@@ -902,6 +909,7 @@ const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
   setUsageBatchLoading(cacheKey, true)
   pendingUsageBatchIds.add(cacheKey)
   queuedUsageBatchForce = queuedUsageBatchForce || force
+  if (options?.source) queuedUsageBatchSource = options.source
 
   if (usageBatchFlushTimer !== null) return
   usageBatchFlushTimer = setTimeout(() => {
@@ -1526,6 +1534,8 @@ const refreshAccountsIncrementally = async () => {
     }
     upstreamBillingNow.value = Date.now()
 
+    // Usage has its own lifetime; an unchanged list ETag must not freeze it.
+    usageAutoRefreshToken.value += 1
     await refreshTodayStatsBatch()
   } catch (error) {
     console.error('Auto refresh failed:', error)

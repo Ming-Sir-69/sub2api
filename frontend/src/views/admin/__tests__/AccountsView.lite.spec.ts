@@ -136,6 +136,8 @@ function mountView(stubActionMenu = true, realUsageCell = false) {
         AccountTodayStatsCell: true,
         AccountGroupsCell: AccountGroupsCellStub,
         AccountUsageCell: !realUsageCell,
+        UsageProgressBar: { props: ['utilization'], template: '<span data-test="utilization">{{ utilization }}</span>' },
+        AccountQuotaInfo: true,
         UpstreamBillingRateCell: true,
         HelpTooltip: true,
         Icon: true,
@@ -223,7 +225,7 @@ describe('admin AccountsView lite account list', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
     expect(getBatchUsage).toHaveBeenCalledTimes(1)
-    expect(getBatchUsage).toHaveBeenCalledWith([42], false)
+    expect(getBatchUsage).toHaveBeenCalledWith([42], false, undefined)
 
     const next = { ...account, extra: { session_window_utilization: 0.44, passive_usage_7d_utilization: 0.54 }, last_used_at: platform === 'gemini' ? '2026-11-16T10:00:00Z' : null }
     getBatchUsage.mockResolvedValue({ usage: { '42': { five_hour: { utilization: 44 }, seven_day: { utilization: 54 } } }, errors: {} })
@@ -231,7 +233,7 @@ describe('admin AccountsView lite account list', () => {
     await vi.advanceTimersByTimeAsync(6000)
     await flushPromises()
     expect(getBatchUsage).toHaveBeenCalledTimes(2)
-    expect(getBatchUsage).toHaveBeenLastCalledWith([42], false)
+    expect(getBatchUsage).toHaveBeenLastCalledWith([42], false, type === 'oauth' && platform === 'anthropic' ? 'active' : undefined)
     const cell = wrapper.findComponent({ name: 'AccountUsageCell' })
     expect(cell.props('account').last_used_at).toBe(next.last_used_at)
     expect(cell.props('batchedUsage').seven_day.utilization).toBe(54)
@@ -242,7 +244,7 @@ describe('admin AccountsView lite account list', () => {
     listWithEtag.mockResolvedValue({ notModified: false, etag: 'unrelated', data: { items: [{ ...next, updated_at: 'new', current_concurrency: 2, extra: { ...next.extra, unrelated: true } }], total: 1, pages: 1 } })
     await vi.advanceTimersByTimeAsync(6000)
     await flushPromises()
-    expect(getBatchUsage).toHaveBeenCalledTimes(2)
+    expect(getBatchUsage).toHaveBeenCalledTimes(type === 'oauth' && platform === 'anthropic' ? 3 : 2)
     wrapper.unmount()
   })
 
@@ -333,6 +335,85 @@ describe('admin AccountsView lite account list', () => {
       expect.objectContaining({ lite: '1' }),
       expect.objectContaining({ etag: null })
     )
+    wrapper.unmount()
+  })
+
+  it.each(['anthropic', 'openai'] as const)('refreshes %s quota on an unchanged list ETag without forcing upstream probes', async (platform) => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+    listAccounts.mockResolvedValue({ items: [{ ...listRow, platform }], total: 1, page: 1, page_size: 20, pages: 1 })
+    const usage = (percent: number) => ({ usage: { '42': { five_hour: { utilization: percent }, seven_day: { utilization: percent } } }, errors: {} })
+    getBatchUsage.mockResolvedValueOnce(usage(12)).mockResolvedValue(usage(43))
+    const wrapper = mountView(true, true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(getBatchUsage).toHaveBeenNthCalledWith(1, [42], false, undefined)
+    expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).toContain('12')
+
+    await vi.advanceTimersByTimeAsync(6100)
+    await flushPromises()
+    expect(listWithEtag).toHaveBeenCalled()
+    expect(getBatchUsage).toHaveBeenLastCalledWith([42], false, 'active')
+    expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).toContain('43')
+    wrapper.unmount()
+  })
+
+  it('manual refresh supersedes an in-flight passive read and ignores its late stale result', async () => {
+    vi.useFakeTimers()
+    listAccounts.mockResolvedValue({ items: [{ ...listRow, platform: 'anthropic' }], total: 1, page: 1, page_size: 20, pages: 1 })
+    const usage = (percent: number, source: string) => ({ usage: { '42': { source, five_hour: { utilization: percent }, seven_day: { utilization: percent } } }, errors: {} })
+    let finishPassive: (value: unknown) => void = () => {}
+    getBatchUsage.mockImplementationOnce(() => new Promise(resolve => { finishPassive = resolve })).mockResolvedValue(usage(44, 'active'))
+    const wrapper = mountView(true, true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getBatchUsage).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-test="manual-refresh"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(getBatchUsage).toHaveBeenLastCalledWith([42], true, 'active')
+    expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).toContain('44')
+    finishPassive(usage(21, 'passive'))
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).not.toContain('21')
+    expect(wrapper.text()).not.toContain('admin.accounts.usageWindow.passiveSampled')
+    wrapper.unmount()
+  })
+
+  it('does not promote an OpenAI snapshot update into a forced upstream batch', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+    listWithEtag.mockResolvedValue({ notModified: false, etag: 'new-snapshot', data: { items: [{ ...listRow, updated_at: '2026-11-07T01:00:00Z', extra: { codex_usage_updated_at: '2026-11-07T01:00:00Z' } }], total: 1, pages: 1 } })
+    const wrapper = mountView(true, true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(6100)
+    await flushPromises()
+    expect(getBatchUsage).toHaveBeenCalledTimes(2)
+    expect(getBatchUsage.mock.calls.every(([, force]) => force === false)).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('lets a slow automatic quota request finish before starting another poll', async () => {
+    listAccounts.mockResolvedValue({ items: [{ ...listRow, platform: 'anthropic' }], total: 1, page: 1, page_size: 20, pages: 1 })
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+    let finish: (value: unknown) => void = () => {}
+    getBatchUsage.mockResolvedValueOnce({ usage: {}, errors: {} }).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mountView(true, true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(6100)
+    await flushPromises()
+    expect(getBatchUsage).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(12000)
+    expect(getBatchUsage).toHaveBeenCalledTimes(2)
+    finish({ usage: { '42': { five_hour: { utilization: 43 } } }, errors: {} })
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="utilization"]').map(node => node.text())).toContain('43')
     wrapper.unmount()
   })
 

@@ -87,6 +87,7 @@ export const buildAccountUsageRefreshKey = (account: Pick<Account, 'id' | 'platf
     ...(isClaude ? [
       account.session_window_status ?? null,
       extra.session_window_utilization ?? null,
+      extra.claude_five_hour_available ?? null,
       extra.passive_usage_sampled_at ?? null,
       extra.passive_usage_7d_utilization ?? null,
       extra.passive_usage_7d_reset ?? null,
